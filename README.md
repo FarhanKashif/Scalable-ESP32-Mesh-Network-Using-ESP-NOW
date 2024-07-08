@@ -1,2 +1,2 @@
 Version 0.1 
-Repo Intiailized. Work to be done.
+Repo Initialized. Work to be done.

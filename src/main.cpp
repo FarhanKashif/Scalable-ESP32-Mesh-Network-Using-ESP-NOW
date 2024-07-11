@@ -148,37 +148,13 @@ void setup() {
 
   esp_now_init(); // Initialize ESP-NOW
   
-  // // Set the role of first peer
-  // memcpy(esp32_32u.peer_addr, esp32_1, 6);
-  // esp32_32u.channel = 0;
-  // esp32_32u.encrypt = false;
-
-  // Set the role of second peer
-  /*memcpy(esp32_32u_2.peer_addr, esp32_2, 6);
-  esp32_32u_2.channel = 0;
-  esp32_32u_2.encrypt = false;*/
-
-  // Add Peers
-  // if(esp_now_add_peer(&esp32_32u) != ESP_OK) {
-  //   Serial.println("Failed to add ESP32 32u");
-  // } else {
-  //   Serial.println("ESP32 32u Peer added");
-  // }
-
   Add_Peer(esp32_1); // Add 1st ESP32 32u Peer
   Add_Peer(esp32_2); // Add 2nd ESP32 32u Peer  
-
-  /*if(esp_now_add_peer(&esp32_32u_2) != ESP_OK) {
-    Serial.println("Failed to add ESP32 32u 2");
-  } else {
-    Serial.println("ESP32 32u 2 Peer added");
-  }*/
 
   esp_now_register_send_cb(On_Data_Sent); // Register send_cb function
   esp_now_register_recv_cb(On_Data_Receive); // Register receive_cb function  
 
-  // Prepare data to send
-  sprintf((char*) msg.text, "Hello from ESP32-32");
+  sprintf((char*) msg.text, "Hello from ESP32-32"); // Prepare data to send
 
   delay(1000);
   //esp_now_send(&esp32_32u_2.peer_addr[0], (uint8_t *) data, sizeof(msg)); // Send data to 2nd ESP32 32u

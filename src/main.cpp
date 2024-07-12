@@ -1,21 +1,26 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_now.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 void Send_Data(const uint8_t *mac);
 void On_Data_Sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 void Check_Existing_Peer(const uint8_t* mac);
 void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len);
 void Add_Peer(const uint8_t* mac);
+void ProcessReceivedData();
 void readMAC();
 
 uint8_t baseMac[6]; // Base MAC Address of Sender
 char base_mac_str[18]; 
 int counter = 1; // Session Counter
 char *data;
+int incoming_data_count = 0;
 
-const uint8_t esp32_1[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 1st ESP32-32u 
-const uint8_t esp32_2[] = {0x24, 0xDC, 0xC3, 0xC6, 0xAE, 0xCC}; // MAC Address of ESP32 32 2nd
+//const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
+const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
+const uint8_t node3[] = {0x24, 0xDC, 0xC3, 0xC6, 0xAE, 0xCC}; // MAC Address of 3rd ESP32-32u 
 
 typedef struct message {
   unsigned char text[64]; // 64 bytes of text
@@ -25,6 +30,15 @@ typedef struct message {
 } message_t;
 
 message_t msg;
+
+typedef struct queue_node {
+  message_t data;
+  uint8_t mac[6];
+  struct queue_node *next;
+} queue_node_t;
+
+queue_node_t *front = NULL;
+queue_node_t *rear = NULL;
 
 void Send_Data(const uint8_t *mac)
 {
@@ -50,6 +64,7 @@ void On_Data_Sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
       Serial.println(""); // Print Next Line
     }
   }
+
 }
 
 // Check if Peer Already Exists
@@ -60,8 +75,6 @@ void Check_Existing_Peer(const uint8_t* mac)
     Serial.println("New Peer Found.");
     Serial.println("Adding Peer");
     Add_Peer(mac);  // Add New Peer to network
-  } else {
-    Serial.println("No new Peer Found");
   }
 
 }
@@ -69,7 +82,50 @@ void Check_Existing_Peer(const uint8_t* mac)
 // Callback when data is received
 void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
 
-  Check_Existing_Peer(mac); // Check if peer already exists
+  ++incoming_data_count; // Increment Incoming Data Count
+
+  // Handle Incoming Data 
+  queue_node_t *new_node = (queue_node_t *)malloc(sizeof(queue_node_t));
+
+  if(new_node == NULL) {
+    Serial.println("Memory Allocation Failed.");
+    return;
+  }
+
+  strncpy((char*)new_node->data.text, (char*)data, sizeof(new_node->data.text) - 1);
+  new_node->data.text[sizeof(new_node->data.text) - 1] = '\0'; // Ensure null termination
+  memcpy(new_node->mac, mac, 6);  
+  new_node -> next = NULL;
+
+  if(front == NULL && rear == NULL) {
+    front = rear = new_node;
+  } else {
+    rear -> next = new_node;
+    rear = new_node;
+  }
+
+  // Serial.println("Data Received Successfully.");
+  // Serial.println((char *) new_node ->data.text);
+
+}
+
+void ProcessReceivedData() {
+
+  if(front == NULL) {
+    Serial.println("Queue is empty. No Data to Process");
+    return;
+  }
+
+  queue_node_t *temp = front;
+
+  Serial.println("Inside Processing Function");
+
+  front = front->next;  // Point to next node in queue
+
+  if(front == NULL) {
+    rear = NULL;
+  }
+
 
   Serial.println("*************************************************");
   Serial.println("");
@@ -79,7 +135,7 @@ void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
   Serial.print("MAC Address: ");
 
   for (int i = 0; i < 6; i++) {
-    Serial.print(mac[i], HEX);
+    Serial.print(temp->mac[i], HEX);
     if (i < 5) {
       Serial.print(":");
     } 
@@ -89,11 +145,15 @@ void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
   }
 
   Serial.print("Data Received: ");
-  Serial.println((char*) data);
+  Serial.println((char*) temp->data.text);
   Serial.println("Session Terminated");
   Serial.println("");
   Serial.println("*************************************************");
   counter++;  // Increment session counter
+
+  Check_Existing_Peer(temp->mac); // Check if Peer Exists
+
+  free(temp); // Free memory
 }
 
 void Add_Peer(const uint8_t* mac) {
@@ -137,6 +197,7 @@ void setup() {
   Serial.begin(115200);
 
   // Initialize WiFi and Set in Station Mode
+  WiFi.disconnect();
   WiFi.mode(WIFI_STA);  
   if(esp_wifi_init(NULL) != ESP_OK) {
     Serial.println("Failed to initialize WiFi");
@@ -148,22 +209,35 @@ void setup() {
 
   esp_now_init(); // Initialize ESP-NOW
   
-  Add_Peer(esp32_1); // Add 1st ESP32 32u Peer
-  Add_Peer(esp32_2); // Add 2nd ESP32 32u Peer  
+  Add_Peer(node2); // Add 1st ESP32 32u Peer
+  Add_Peer(node3); // Add 2nd ESP32 32u Peer  
 
   esp_now_register_send_cb(On_Data_Sent); // Register send_cb function
   esp_now_register_recv_cb(On_Data_Receive); // Register receive_cb function  
 
-  sprintf((char*) msg.text, "Hello from ESP32-32"); // Prepare data to send
+  sprintf((char*) msg.text, "Hello from Node 3"); // Prepare data to send
 
   delay(1000);
   //esp_now_send(&esp32_32u_2.peer_addr[0], (uint8_t *) data, sizeof(msg)); // Send data to 2nd ESP32 32u
 }
 
+int flag = 0;
 
 void loop() {
 
-  Send_Data(esp32_1);
+  while(incoming_data_count > 0) {
+    Serial.println(incoming_data_count);
+    ProcessReceivedData();
+    incoming_data_count--;
+  }
 
-  delay(5000);  // Send data after 5 seconds
+  if(flag == 0) {
+    Send_Data(node3);
+    flag++;
+  }
+  
+
+  /* Check Remaining Stack Size */
+  /*UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
+  printf("Stack high water mark: %u bytes\n", stackHighWaterMark * sizeof(StackType_t));*/
 }

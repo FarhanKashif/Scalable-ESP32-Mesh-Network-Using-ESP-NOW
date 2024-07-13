@@ -18,10 +18,15 @@ int counter = 1; // Session Counter
 char *data;
 int incoming_data_count = 0;
 
-//const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
-const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
+const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
+//const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
 const uint8_t node3[] = {0x24, 0xDC, 0xC3, 0xC6, 0xAE, 0xCC}; // MAC Address of 3rd ESP32-32u 
 
+// PMK & LMK Keys
+static const char *PMK_KEY = "Connection@ESP32"; // 16-byte PMK
+static const char *LMK_KEY = "LMK@ESP32_123456"; // 16-byte LMK
+
+// Packet Structure
 typedef struct message {
   unsigned char text[64]; // 64 bytes of text
   //int value; 
@@ -31,6 +36,7 @@ typedef struct message {
 
 message_t msg;
 
+// Queue Structure
 typedef struct queue_node {
   message_t data;
   uint8_t mac[6];
@@ -49,7 +55,6 @@ void Send_Data(const uint8_t *mac)
     Serial.println("Error while sending data.");
     Serial.println(esp_err_to_name(result));
   }
-
 }
 
 // Callback when data is sent
@@ -92,7 +97,7 @@ void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
     return;
   }
 
-  strncpy((char*)new_node->data.text, (char*)data, sizeof(new_node->data.text) - 1);
+  strncpy((char*)new_node->data.text, (char*)data, sizeof(new_node->data.text) - 1); // Copy data to new node
   new_node->data.text[sizeof(new_node->data.text) - 1] = '\0'; // Ensure null termination
   memcpy(new_node->mac, mac, 6);  
   new_node -> next = NULL;
@@ -160,7 +165,10 @@ void Add_Peer(const uint8_t* mac) {
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, mac, 6);
   peerInfo.channel = 0;  
-  peerInfo.encrypt = false;
+  for(uint8_t i = 0; i<16; i++) {
+    peerInfo.lmk[i] = LMK_KEY[i];
+  }
+  peerInfo.encrypt = true;
 
   esp_err_t status = esp_now_add_peer(&peerInfo);
   if (status == ESP_OK) {
@@ -209,7 +217,9 @@ void setup() {
 
   esp_now_init(); // Initialize ESP-NOW
   
-  Add_Peer(node2); // Add 1st ESP32 32u Peer
+  esp_now_set_pmk((uint8_t *) PMK_KEY); // Set PMK Key
+  
+  Add_Peer(node1); // Add 1st ESP32 32u Peer
   Add_Peer(node3); // Add 2nd ESP32 32u Peer  
 
   esp_now_register_send_cb(On_Data_Sent); // Register send_cb function
@@ -222,6 +232,7 @@ void setup() {
 }
 
 int flag = 0;
+int prev_time = 0;
 
 void loop() {
 
@@ -231,12 +242,11 @@ void loop() {
     incoming_data_count--;
   }
 
-  if(flag == 0) {
-    Send_Data(node3);
-    flag++;
+  if(millis() - prev_time > 2000) {
+    Send_Data(node1);
+    prev_time = millis();
   }
   
-
   /* Check Remaining Stack Size */
   /*UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
   printf("Stack high water mark: %u bytes\n", stackHighWaterMark * sizeof(StackType_t));*/

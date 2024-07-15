@@ -9,6 +9,7 @@ void On_Data_Sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 void Check_Existing_Peer(const uint8_t* mac);
 void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len);
 void Add_Peer(const uint8_t* mac);
+void broadcast();
 void ProcessReceivedData();
 void readMAC();
 
@@ -18,8 +19,8 @@ int counter = 1; // Session Counter
 char *data;
 int incoming_data_count = 0;
 
-const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
-//const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
+//const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
+const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
 const uint8_t node3[] = {0x24, 0xDC, 0xC3, 0xC6, 0xAE, 0xCC}; // MAC Address of 3rd ESP32-32u 
 
 // PMK & LMK Keys
@@ -31,7 +32,8 @@ typedef struct message {
   unsigned char text[64]; // 64 bytes of text
   //int value; 
   //float temperature; 
-  //bool flag; 
+  int identification; // 1-> BROADCAST, 2-> DATA, 3-> ACK
+  bool isAck; //  0 -> Default, 1 -> Acknowledgement
 } message_t;
 
 message_t msg;
@@ -48,7 +50,7 @@ queue_node_t *rear = NULL;
 
 void Send_Data(const uint8_t *mac)
 {
-  esp_err_t result = esp_now_send(mac, (uint8_t *) msg.text, sizeof(msg.text)); // Send data to 1st ESP32-32u
+  esp_err_t result = esp_now_send(mac, (uint8_t *) &msg, sizeof(msg)); // Send data to 1st ESP32-32u
   if(result == ESP_OK) {
     Serial.println("Sent with Success.");
   } else {
@@ -96,10 +98,12 @@ void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
     Serial.println("Memory Allocation Failed.");
     return;
   }
-
+  memcpy(&msg, data, sizeof(msg)); // Copy data to msg structure
   strncpy((char*)new_node->data.text, (char*)data, sizeof(new_node->data.text) - 1); // Copy data to new node
   new_node->data.text[sizeof(new_node->data.text) - 1] = '\0'; // Ensure null termination
-  memcpy(new_node->mac, mac, 6);  
+  memcpy(new_node->mac, mac, 6); 
+  new_node->data.identification = msg.identification;
+  new_node->data.isAck = msg.isAck; 
   new_node -> next = NULL;
 
   if(front == NULL && rear == NULL) {
@@ -132,31 +136,56 @@ void ProcessReceivedData() {
   }
 
 
-  Serial.println("*************************************************");
-  Serial.println("");
-  Serial.print("Session: ");
-  Serial.println(counter);
-  Serial.println("Session Started");
-  Serial.print("MAC Address: ");
+  switch(temp->data.identification) {
+    case 2: // DATA is Received 
+      Serial.println("*************************************************");
+      Serial.println("");
+      Serial.print("Session: ");
+      Serial.println(counter);
+      Serial.println("Session Started");
+      Serial.print("MAC Address: ");
 
-  for (int i = 0; i < 6; i++) {
-    Serial.print(temp->mac[i], HEX);
-    if (i < 5) {
-      Serial.print(":");
-    } 
-    if( i == 5) {
-      Serial.println(""); // print a new line
-    }
+      for (int i = 0; i < 6; i++) {
+        Serial.print(temp->mac[i], HEX);
+        if (i < 5) {
+          Serial.print(":");
+        } 
+        if( i == 5) {
+          Serial.println(""); // print a new line
+        }
+      }
+
+      if((bool *)temp->data.isAck) {
+        Serial.print("Broadcast Acknowldgement Received: ");
+        Serial.println(temp->data.isAck);
+        Serial.println((char *) temp->data.text);
+        Check_Existing_Peer(temp->mac); // Check if Peer Exists else Add Peer
+      } else {
+        Serial.print("Data Received: ");
+        Serial.println((char*) temp->data.text);
+        Serial.println("Session Terminated");
+        Serial.println("");
+        Serial.println("*************************************************");
+      }
+    break;
+    case 1: // BROADCAST is Received
+      Serial.println("Broadcast Message Received");
+      Serial.print("Data Identification Number: ");
+      Serial.println(temp->data.identification);
+      memset(&msg, 0, sizeof(msg));
+      strcpy((char *)msg.text, "Acknowledgement from Node 3");
+      msg.identification = 2; // Set Identification to DATA
+      msg.isAck = true; // Set Acknowledgement to true
+      Check_Existing_Peer(temp->mac); // Check if Peer Exists
+      Send_Data(temp->mac); // Send Data to Sender
+    break;
+    default:  // Unknown Message
+      Serial.println("Unknown Message Received");
+    break;
   }
 
-  Serial.print("Data Received: ");
-  Serial.println((char*) temp->data.text);
-  Serial.println("Session Terminated");
-  Serial.println("");
-  Serial.println("*************************************************");
   counter++;  // Increment session counter
 
-  Check_Existing_Peer(temp->mac); // Check if Peer Exists
 
   free(temp); // Free memory
 }
@@ -168,7 +197,7 @@ void Add_Peer(const uint8_t* mac) {
   for(uint8_t i = 0; i<16; i++) {
     peerInfo.lmk[i] = LMK_KEY[i];
   }
-  peerInfo.encrypt = true;
+  peerInfo.encrypt = false;
 
   esp_err_t status = esp_now_add_peer(&peerInfo);
   if (status == ESP_OK) {
@@ -200,6 +229,32 @@ void readMAC()
   }
 }
 
+void broadcast()
+{
+  const uint8_t broadcast_address[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  esp_now_peer_info_t peerInfo = {};
+  memcpy(peerInfo.peer_addr, broadcast_address, 6);
+
+  if(!esp_now_is_peer_exist(broadcast_address)) {
+    esp_now_add_peer(&peerInfo);
+  }
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+
+  // Prepare Broadcast Data
+  msg.identification = 1; // Set Identification to BROADCAST
+  sprintf((char *)msg.text, "Broadcast_Msg");
+  msg.isAck = false; // Set Acknowledgement to false
+  // Send Message
+  esp_err_t result = esp_now_send(broadcast_address, (uint8_t *) &msg, sizeof(msg));
+  if(result == ESP_OK) {
+    Serial.println("Broadcast Message Sent Successfully.");
+  } else {
+    Serial.println("Error while sending broadcast message.");
+    Serial.println(esp_err_to_name(result));  
+  }
+}
+
 void setup() {
   
   Serial.begin(115200);
@@ -219,8 +274,8 @@ void setup() {
   
   esp_now_set_pmk((uint8_t *) PMK_KEY); // Set PMK Key
   
-  Add_Peer(node1); // Add 1st ESP32 32u Peer
-  Add_Peer(node3); // Add 2nd ESP32 32u Peer  
+  //Add_Peer(node2); // Add 1st ESP32 32u Peer
+  //Add_Peer(node3); // Add 2nd ESP32 32u Peer  
 
   esp_now_register_send_cb(On_Data_Sent); // Register send_cb function
   esp_now_register_recv_cb(On_Data_Receive); // Register receive_cb function  
@@ -233,6 +288,7 @@ void setup() {
 
 int flag = 0;
 int prev_time = 0;
+int broadcast_prev_time = 0;
 
 void loop() {
 
@@ -242,12 +298,20 @@ void loop() {
     incoming_data_count--;
   }
 
-  if(millis() - prev_time > 2000) {
-    Send_Data(node1);
+  /*if(millis() - prev_time > 3000) {
+    Send_Data(node2);
     prev_time = millis();
-  }
+  }*/
   
+  // Send Broadcast Msg after 5 seconds
+  if(millis() - broadcast_prev_time > 5000) {
+    broadcast();
+    broadcast_prev_time = millis();
+  }
+
   /* Check Remaining Stack Size */
   /*UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
   printf("Stack high water mark: %u bytes\n", stackHighWaterMark * sizeof(StackType_t));*/
+
+  delay(50);
 }

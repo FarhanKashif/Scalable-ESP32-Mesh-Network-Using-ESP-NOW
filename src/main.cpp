@@ -5,14 +5,16 @@
 #include <freertos/task.h>
 #include <vector>
 #include <map>
+#include <time.h>
 
 void Forward_Message();
-bool Configure_Packet(const char *data, int TTL, int identification, bool isAck, uint16_t packetID, const uint8_t *destination_mac, const uint8_t *source_mac);
+bool Configure_Packet(const char *data, int TTL, int identification, bool broadcast_Ack, bool Data_Ack, const uint8_t *destination_mac, const uint8_t *source_mac);
 void Send_Data(const uint8_t *mac);
 void On_Data_Sent(const uint8_t *mac_addr, esp_now_send_status_t status);
 void Check_Existing_Peer(const uint8_t* mac);
 void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len);
 void Add_Peer(const uint8_t* mac);
+void SwitchToEncryption(const uint8_t *mac);
 void broadcast();
 void ProcessReceivedData();
 void readMAC();
@@ -25,14 +27,14 @@ int incoming_data_count = 0;
 bool forward_flag = false;
 
 std::vector<uint8_t*> connected_nodes; // Vector to store connected nodes
-std::map<uint16_t, bool> receivedpackets; // Track of PacketID's
+std::map<int, bool> receivedpackets; // Track of PacketID's
 
 const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
 const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
 const uint8_t node3[] = {0x24, 0xDC, 0xC3, 0xC6, 0xAE, 0xCC}; // MAC Address of 3rd ESP32-32u 
 
 // PMK & LMK Keys
-static const char *PMK_KEY = "Connection@ESP32"; // 16-byte PMK
+static const char *PMK_KEY = "Connection_ESP32"; // 16-byte PMK
 static const char *LMK_KEY = "LMK@ESP32_123456"; // 16-byte LMK
 
 
@@ -43,13 +45,21 @@ typedef struct message {
   //float temperature;
   int TTL; // Time to live for packet 
   int identification; // 1-> BROADCAST, 2-> DATA
-  bool isAck; //  0 -> Default Communication, 1 -> Acknowledgement of Broadcast
+  bool broadcast_Ack; //  0 -> Default Communication, 1 -> Acknowledgement of Broadcast
+  bool Data_Ack; // 0 -> Default Communication, 1 -> Acknowledgement of Data
   uint8_t destination_mac[6]; // MAC Address of Receiver
   uint8_t source_mac[6]; // MAC Address of Sender
-  uint16_t packetID; // Packet ID
+  int packetID; // Packet ID
 } message_t;
 
 message_t msg;
+
+enum State {
+  WAITING_FOR_ACK,
+  READY_TO_SEND,
+};
+
+State currentState = READY_TO_SEND; // Initial State of Device
 
 // Queue Structure
 typedef struct queue_node {
@@ -61,12 +71,14 @@ typedef struct queue_node {
 queue_node_t *front = NULL;
 queue_node_t *rear = NULL;
 
+// Send Data Function
 void Send_Data(const uint8_t *mac)
 {
   if(esp_now_is_peer_exist(mac)) {
     esp_err_t result = esp_now_send(mac, (uint8_t *) &msg, sizeof(msg)); // Send data to 1st ESP32-32u
     if(result == ESP_OK) {
       Serial.println("Sent with Success.");
+      currentState = WAITING_FOR_ACK; // Change State to WAITING_FOR_ACK
     } else {
       Serial.println("Error while sending data.");
       Serial.println(esp_err_to_name(result));
@@ -91,23 +103,27 @@ void On_Data_Sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 
 }
 
-bool Configure_Packet(const char *text, int TTL, int identification, bool isAck, uint16_t packetID, const uint8_t *destination_mac, const uint8_t *source_mac) {
+// Set Packet Contents
+bool Configure_Packet(const char *text, int TTL, int identification, bool broadcast_Ack, bool Data_Ack, const uint8_t *destination_mac, const uint8_t *source_mac) {
   
   /*if(mac == NULL || data == NULL || destination_mac == NULL || source_mac == NULL) {
     return false;
   }*/
 
-  memset(&msg, 0, sizeof(msg)); // Clear Message
+  memset(&msg, 0, sizeof(msg)); // Clear Packet
   strncpy((char *)msg.text, text, sizeof(msg.text) - 1); // Copy Data to Message
   msg.text[sizeof(msg.text) - 1] = '\0'; // Null Terminate
   msg.TTL = TTL; // Set Time to Live
   msg.identification = identification; // Set Identification
-  msg.isAck = isAck; // Set Acknowledgement
-  msg.packetID = packetID; // Set Packet ID
+  msg.broadcast_Ack = broadcast_Ack; // Set Acknowledgement
+  msg.Data_Ack = Data_Ack; // Set Data Acknowledgement
+  int random = esp_random(); // Generate Random Number
+  msg.packetID = random; // Set Packet ID
   memcpy(msg.destination_mac, destination_mac, 6); // Set Destination MAC Address
   memcpy(msg.source_mac, source_mac, 6); // Set Source MAC Address
   return true;
 }
+
 // Check if Peer Already Exists
 void Check_Existing_Peer(const uint8_t* mac)
 {
@@ -131,20 +147,21 @@ void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
     Serial.println("Memory Allocation Failed.");
     return;
   }
-    
+  
   // Copy message details to new node
   strncpy((char*)new_node->data.text, (char*)data, sizeof(new_node->data.text) - 1);
   new_node->data.text[sizeof(new_node->data.text) - 1] = '\0';
   memcpy(new_node->mac, mac, 6); 
   new_node->data.identification = msg.identification;
-  new_node->data.isAck = msg.isAck; 
+  new_node->data.broadcast_Ack = msg.broadcast_Ack; 
+  new_node->data.Data_Ack = msg.Data_Ack;
   new_node->data.TTL = msg.TTL;  
   new_node->data.packetID = msg.packetID;
   memcpy(new_node->data.destination_mac, msg.destination_mac, 6);
   memcpy(new_node->data.source_mac, msg.source_mac, 6);
   new_node->next = NULL;
 
-  //Configure_Packet((char*)new_node->data.text, new_node->data.TTL, new_node->data.identification, new_node->data.isAck, new_node->data.packetID, new_node->data.destination_mac, new_node->data.source_mac);
+  //Configure_Packet((char*)new_node->data.text, new_node->data.TTL, new_node->data.identification, new_node->data.broadcast_Ack, new_node->data.Data_Ack, new_node->data.destination_mac, new_node->data.source_mac);
 
   if(front == NULL && rear == NULL) {
     front = rear = new_node;
@@ -179,14 +196,15 @@ void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
   }
 }
 
-
+// Process Received Data
 void ProcessReceivedData() {
-
+  Serial.print("Packet ID: ");
+  Serial.println(msg.packetID);
   // Check if Packet is already received
-  /*if(receivedpackets[msg.packetID]) {
+  if(receivedpackets[msg.packetID]) {
     Serial.println("Packet Already Received. Discarding Duplicate Packet.");
     return;
-  }*/
+  }
 
   receivedpackets[msg.packetID] = true; // Mark Packet as Received
 
@@ -195,6 +213,7 @@ void ProcessReceivedData() {
     return;
   }
 
+  // Packet Forwarding
   if(forward_flag) {
     Send_Data(msg.destination_mac);
     forward_flag = false;
@@ -229,19 +248,34 @@ void ProcessReceivedData() {
           Serial.println(""); // print a new line
         }
       }
-
-      if((bool *)temp->data.isAck) {
+      Serial.print("Packet ID: ");
+      Serial.println(temp->data.packetID);
+      if((bool *)temp->data.broadcast_Ack) {  // Process Broadcast Acknowledgement
         Serial.print("Broadcast Acknowldgement Received: ");
-        Serial.println(temp->data.isAck);
+        Serial.println(temp->data.broadcast_Ack);
         Serial.println((char *) temp->data.text);
         Check_Existing_Peer(temp->mac); // Check if Peer Exists else Add Peer
+        SwitchToEncryption(temp->mac); // Switch to encryption mode
         Serial.println("*************************************************");
-      } else {
+      } else if((bool *)temp->data.Data_Ack) {  // Process Data Acknowledgement
+        Serial.print("Data Acknowledgement Received: ");
+        Serial.println(temp->data.Data_Ack);
+        Serial.println((char *) temp->data.text);
+        Serial.println("Session Terminated");
+        Serial.println("");
+        Serial.println("*************************************************");
+        currentState = READY_TO_SEND; // Change State to READY_TO_SEND
+      }
+      else {
         Serial.print("Data Received: ");
         Serial.println((char*) temp->data.text);
         Serial.println("Session Terminated");
         Serial.println("");
         Serial.println("*************************************************");
+        // Handle Sending Acknowledgement here for Data
+        memset(&msg, 0, sizeof(msg));
+        Configure_Packet("Ack from Node 3", 10, 2, false, true, temp->data.source_mac, baseMac); // Configure Packet
+        Send_Data(temp->data.source_mac); // Send Data to Sender
       }
     break;
     case 1: // BROADCAST is Received
@@ -249,9 +283,10 @@ void ProcessReceivedData() {
       Serial.print("Data Identification Number: ");
       Serial.println(temp->data.identification);
       memset(&msg, 0, sizeof(msg));
-      Configure_Packet("Acknowledgement from Node 3", 0, 2, true, 2, temp->mac, baseMac); // Configure Packet
+      Configure_Packet("Acknowledgement from Node 3", 0, 2, true, false, temp->mac, baseMac); // Configure Packet
       Check_Existing_Peer(temp->mac); // Check if Peer Exists
       Send_Data(temp->mac); // Send Data to Sender
+      SwitchToEncryption(temp->mac); // Switch to encryption mode
     break;
     default:  // Unknown Message
       Serial.println("Unknown Message Received");
@@ -263,14 +298,17 @@ void ProcessReceivedData() {
   free(temp); // Free memory
 }
 
+// Add Peer to Routing Table
 void Add_Peer(const uint8_t* mac) {
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, mac, 6);
-  peerInfo.channel = 0;  
+  peerInfo.channel = 0;
+  
   for(uint8_t i = 0; i<16; i++) {
     peerInfo.lmk[i] = LMK_KEY[i];
   }
-  peerInfo.encrypt = false;
+
+  peerInfo.encrypt = false; // Enable Encryption Mode
 
   esp_err_t status = esp_now_add_peer(&peerInfo);
   
@@ -314,6 +352,7 @@ void readMAC()
   }
 }
 
+// Broadcast Message
 void broadcast()
 {
   const uint8_t broadcast_address[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -328,7 +367,7 @@ void broadcast()
 
   // Prepare Broadcast Data
 
-  Configure_Packet("Broadcast_Msg", 0, 1, false, 9, broadcast_address, baseMac); // Configure Packet
+  Configure_Packet("Broadcast_Msg", 0, 1, false, false, broadcast_address, baseMac); // Configure Packet
   // Send Message
   esp_err_t result = esp_now_send(broadcast_address, (uint8_t *) &msg, sizeof(msg));
   if(result == ESP_OK) {
@@ -339,6 +378,7 @@ void broadcast()
   }
 }
 
+// Packet Forwarding Function
 void Forward_Message()
 {
   if(connected_nodes.empty()) {
@@ -358,10 +398,48 @@ void Forward_Message()
       esp_err_t result = esp_now_send(peer, (uint8_t*)&msg, sizeof(msg));
       if (result == ESP_OK) {
         Serial.printf("Message forwarded successfully to peer with MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", peer[0], peer[1], peer[2], peer[3], peer[4], peer[5]);
+        currentState = WAITING_FOR_ACK; // Change State to WAITING_FOR_ACK
       } else {
         Serial.println("Error forwarding message.");
         Serial.println(esp_err_to_name(result));
       }
+    }
+  }
+}
+
+void SwitchToEncryption(const uint8_t *mac) {
+  if(esp_now_is_peer_exist(mac)) {
+    esp_now_peer_info_t peerInfo = {};
+
+    if(esp_now_get_peer(mac, &peerInfo) == ESP_OK) {
+      if(peerInfo.encrypt) {
+        Serial.println("Encryption Mode Already Enabled.");
+        Serial.printf("Peer MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", peerInfo.peer_addr[0], peerInfo.peer_addr[1], peerInfo.peer_addr[2], peerInfo.peer_addr[3], peerInfo.peer_addr[4], peerInfo.peer_addr[5]);
+        return; // Return if Encryption Mode is already enabled
+      } else {
+        Serial.println("Encryption Mode Not Enabled. Enabling Encryption Mode.");
+        memset(&peerInfo, 0, sizeof(peerInfo));
+        memcpy(peerInfo.peer_addr, mac, 6);
+        peerInfo.channel = 0;
+        
+        for(uint8_t i = 0; i<16; i++) {
+          peerInfo.lmk[i] = LMK_KEY[i];
+        }
+        peerInfo.encrypt = true;
+        if(esp_now_del_peer(mac) == ESP_OK) {
+          Serial.println("Peer Deleted Successfully.");
+        } else {
+          Serial.println("Failed to Delete Peer.");
+        }
+        
+        if(esp_now_add_peer(&peerInfo) == ESP_OK) {
+          Serial.println("Encryption Mode Successfully Enabled.");
+        } else {
+          Serial.println("Failed to Add Peer With Encryption.");
+        }
+      }
+    } else {
+      Serial.println("Failed to Fetch Peer Information.");
     }
   }
 }
@@ -382,18 +460,27 @@ void setup() {
   readMAC(); //Read MC MAC Addr
 
   esp_now_init(); // Initialize ESP-NOW
-  
+
   esp_now_set_pmk((uint8_t *) PMK_KEY); // Set PMK Key
-  
-  //Add_Peer(node2); // Add 1st ESP32 32u Peer
-  Add_Peer(node3); // Add 2nd ESP32 32u Peer  
+
+  Add_Peer(node2); // Add 1st ESP32 32u Peer
+  SwitchToEncryption(node2);
+  //delay(50);
+  //Add_Peer(node3); // Add 2nd ESP32 32u Peer  
+  //SwitchToEncryption(node3);
+  //delay(100);
+  //Add_Peer(node1);
+  //SwitchToEncryption(node1);
+  //delay(100);
 
   esp_now_register_send_cb(On_Data_Sent); // Register send_cb function
   esp_now_register_recv_cb(On_Data_Receive); // Register receive_cb function  
-
+  
   //sprintf((char*) msg.text, "Hello from Node 1"); // Prepare data to send
-  //Configure_Packet("Hello from Node 1", 3, 2, false, 1, node3, node1); // Configure Packet
+  //Configure_Packet("Hello from Node 1", 3, 2, false, false, rand() % 16777216, node3, node1); // Configure Packet 
+
   delay(1000);
+  srand(time(NULL));
   //esp_now_send(&esp32_32u_2.peer_addr[0], (uint8_t *) data, sizeof(msg)); // Send data to 2nd ESP32 32u
 }
 
@@ -402,7 +489,7 @@ int prev_time = 0;
 int broadcast_prev_time = 0;
 
 void loop() {
-
+  
   while(incoming_data_count > 0) {
     Serial.println(incoming_data_count);
     ProcessReceivedData();
@@ -415,17 +502,30 @@ void loop() {
   }*/
 
   /*if(millis() - prev_time > 5000) {
-    Send_Data(node3);
+    Send_Data(node2);
     prev_time = millis();
   }*/
-  
+
+ /*if(currentState == READY_TO_SEND) {
+  Configure_Packet("Hello from Node 1", 3, 2, false, false, node3, node1); // Configure Packet
+  Send_Data(node3);
+ }*/
+ 
+ /*if(currentState == WAITING_FOR_ACK) {
+  // Wait for Acknowledgement for a limited time
+  // If Acknowledgement is not received, resend the packet
+  // If Acknowledgement is not received again, drop the packet and move to READY_TO_SEND state
+  // If Acknowledgement is received, move to READY_TO_SEND state
+
+ }*/
+
   /*if(millis() - prev_time > 5000) {
     Forward_Message();
     prev_time = millis();
   }*/
 
   // Send Broadcast Msg after 5 seconds
-  /*if(millis() - broadcast_prev_time > 5000) {
+  /*if(millis() - broadcast_prev_time > 10000) {
     broadcast();
     broadcast_prev_time = millis();
   }*/
@@ -434,5 +534,5 @@ void loop() {
   /*UBaseType_t stackHighWaterMark = uxTaskGetStackHighWaterMark(NULL);
   printf("Stack high water mark: %u bytes\n", stackHighWaterMark * sizeof(StackType_t));*/
 
-  delay(50);
+  delay(50);  // Delay to Process Data
 }

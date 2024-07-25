@@ -1,2 +1,1 @@
-Version 0.3
-Repo Initialized. Work to be done.
+Version 1.0

@@ -7,6 +7,8 @@
 #include <map>
 #include <time.h>
 
+#define MAX_TRIES 3
+
 void Forward_Message();
 bool Configure_Packet(const char *data, int TTL, int identification, bool broadcast_Ack, bool Data_Ack, const uint8_t *destination_mac, const uint8_t *source_mac);
 void Send_Data(const uint8_t *mac);
@@ -25,6 +27,8 @@ int counter = 1; // Session Counter
 char *data;
 int incoming_data_count = 0;
 bool forward_flag = false;
+unsigned long RTT, startTime, endTime, RTO = 3000; // Round Trip Time, Start Time, End Time, Retransmission Time Out (Initial RTO = 3 sec)
+uint8_t retry_count = 0; // Retry Count for Retransmission
 
 std::vector<uint8_t*> connected_nodes; // Vector to store connected nodes
 std::map<int, bool> receivedpackets; // Track of PacketID's
@@ -52,7 +56,7 @@ typedef struct message {
   int packetID; // Packet ID
 } message_t;
 
-message_t msg;
+message_t msg, copy_msg;
 
 enum State {
   WAITING_FOR_ACK,
@@ -91,6 +95,7 @@ void Send_Data(const uint8_t *mac)
 // Callback when data is sent
 void On_Data_Sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.print("Packet Successfully Sent to: ");
+  startTime = millis(); // Start Timer
   for(int i=0;i<5;i++) {
     Serial.print(mac_addr[i], HEX);
     if(i < 5) {
@@ -121,6 +126,8 @@ bool Configure_Packet(const char *text, int TTL, int identification, bool broadc
   msg.packetID = random; // Set Packet ID
   memcpy(msg.destination_mac, destination_mac, 6); // Set Destination MAC Address
   memcpy(msg.source_mac, source_mac, 6); // Set Source MAC Address
+  memcpy(&copy_msg, &msg, sizeof(msg)); // Make a Buffer of Packet
+
   return true;
 }
 
@@ -139,6 +146,7 @@ void Check_Existing_Peer(const uint8_t* mac)
 void On_Data_Receive(const uint8_t* mac, const uint8_t* data, int len) {
   Serial.println("Inside On_Data_Receive Function");
   // Copy data to msg structure
+  endTime = millis(); // Stop Timer
   memcpy(&msg, data, sizeof(msg)); 
 
   // Handle Incoming Data 
@@ -229,7 +237,7 @@ void ProcessReceivedData() {
   if(front == NULL) {
     rear = NULL;
   }
-
+  RTT = endTime - startTime; // Calculate Round Trip Time
   switch(temp->data.identification) {
     case 2: // DATA is Received 
       Serial.println("*************************************************");
@@ -250,6 +258,8 @@ void ProcessReceivedData() {
       }
       Serial.print("Packet ID: ");
       Serial.println(temp->data.packetID);
+      Serial.print("RTT: ");
+      Serial.println(RTT);
       if((bool *)temp->data.broadcast_Ack) {  // Process Broadcast Acknowledgement
         Serial.print("Broadcast Acknowldgement Received: ");
         Serial.println(temp->data.broadcast_Ack);
@@ -257,6 +267,7 @@ void ProcessReceivedData() {
         Check_Existing_Peer(temp->mac); // Check if Peer Exists else Add Peer
         SwitchToEncryption(temp->mac); // Switch to encryption mode
         Serial.println("*************************************************");
+        memset(&copy_msg, 0, sizeof(copy_msg)); // Clear the Buffer After Successful Broadcast Acknowledgement
       } else if((bool *)temp->data.Data_Ack) {  // Process Data Acknowledgement
         Serial.print("Data Acknowledgement Received: ");
         Serial.println(temp->data.Data_Ack);
@@ -264,6 +275,7 @@ void ProcessReceivedData() {
         Serial.println("Session Terminated");
         Serial.println("");
         Serial.println("*************************************************");
+        memset(&copy_msg, 0, sizeof(copy_msg)); // Clear the Buffer After Successful Data Acknowledgement
         currentState = READY_TO_SEND; // Change State to READY_TO_SEND
       }
       else {
@@ -506,18 +518,32 @@ void loop() {
     prev_time = millis();
   }*/
 
- /*if(currentState == READY_TO_SEND) {
+ if(currentState == READY_TO_SEND) {
   Configure_Packet("Hello from Node 1", 3, 2, false, false, node3, node1); // Configure Packet
   Send_Data(node3);
- }*/
+ }
  
- /*if(currentState == WAITING_FOR_ACK) {
-  // Wait for Acknowledgement for a limited time
-  // If Acknowledgement is not received, resend the packet
-  // If Acknowledgement is not received again, drop the packet and move to READY_TO_SEND state
-  // If Acknowledgement is received, move to READY_TO_SEND state
+ if((currentState == WAITING_FOR_ACK) && (millis() - startTime > RTO) && (retry_count < MAX_TRIES)) {
+  /* Packet Sent */
+  /* Acknowledgement not received within (3, 6, 12) sec */
+  /* Retransmit Packet */
+  retry_count++;
+  RTO *= 2; // Double RTO for Next Attempt (3, 6, 12) sec
+  Serial.println("Retransmitting Packet.");
+  Configure_Packet((char *)copy_msg.text, copy_msg.TTL, copy_msg.identification, copy_msg.broadcast_Ack, copy_msg.Data_Ack, copy_msg.destination_mac, copy_msg.source_mac); // Configure Packet
+  Send_Data(msg.destination_mac); // Retransmit Packet to Destination
+ } 
 
- }*/
+ if(retry_count >= MAX_TRIES) { // Maximum Retransmission Attempts Reached
+  Serial.println("Maximum Retransmission Attempts Reached. Terminating Session.");
+  Serial.println("Discarding Packet.");
+  retry_count = 0; // Reset Retry Count
+  RTO = 3000; // Reset RTO
+  memset(&copy_msg, 0, sizeof(copy_msg)); // Clear Buffer
+  memset(&msg, 0, sizeof(msg)); // Clear Packet Buffer
+  currentState = READY_TO_SEND; // Change State to READY_TO_SEND
+  while(1); // Halt the Program
+ }
 
   /*if(millis() - prev_time > 5000) {
     Forward_Message();

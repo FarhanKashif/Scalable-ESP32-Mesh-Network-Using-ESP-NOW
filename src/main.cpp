@@ -6,9 +6,17 @@
 #include <vector>
 #include <map>
 #include <time.h>
+#include <EEPROM.h>
 
 #define MAX_TRIES 3
+#define EEPROM_SIZE 512
+#define MAX_NODES 10
+#define NODE_SIZE 6
 
+void AddToRoutingAndEEPROM(const uint8_t *mac);
+void PrintMACTable();
+void SaveDataToEEPROM();
+void LoadDataFromEEPROM();
 void Forward_Message();
 bool Configure_Packet(const char *data, int TTL, int identification, bool broadcast_Ack, bool Data_Ack, const uint8_t *destination_mac, const uint8_t *source_mac);
 void Send_Data(const uint8_t *mac);
@@ -456,10 +464,86 @@ void SwitchToEncryption(const uint8_t *mac) {
   }
 }
 
+void SaveDataToEEPROM() {
+  int addr = 0;
+  int node_count = 0;
+  // Save number of nodes on address 0x00. Used for Retrieval Later
+  uint8_t num_nodes = connected_nodes.size();
+  EEPROM.write(addr, num_nodes);
+  addr += sizeof(uint8_t);
+  
+  // Save each Node
+  for(uint8_t *node : connected_nodes) {
+    for(int i = 0; i < NODE_SIZE; i++) {
+      EEPROM.write(addr, node[i]);
+      addr += sizeof(uint8_t);
+    }
+    node_count++;
+  }
+
+  EEPROM.commit();  // Commit changes to EEPROM
+  Serial.printf("Number of Nodes Saved: %d\n", node_count);
+  Serial.println("Successfully Saved Data to EEPROM.");
+}
+
+void LoadDataFromEEPROM() {
+  int addr = 0;
+  uint8_t num_nodes = EEPROM.read(addr);  // Retrieve number of nodes
+  addr += sizeof(uint8_t);  // Move to next address
+
+  connected_nodes.clear(); // Clear the vector before loading new data
+
+  // Load each node
+  for (int i = 0; i < num_nodes; i++) {
+    uint8_t* node = (uint8_t*)malloc(NODE_SIZE);
+    for (int j = 0; j < NODE_SIZE; j++) {
+      node[j] = EEPROM.read(addr);
+      addr += sizeof(uint8_t);
+    }
+
+    // Check for duplicates before adding
+    bool isDuplicate = false;
+    for (auto& existingNode : connected_nodes) {
+      if (memcmp(existingNode, node, NODE_SIZE) == 0) {
+        isDuplicate = true;
+        break;
+      }
+    }
+
+    if (!isDuplicate) {
+      //connected_nodes.push_back(node); // Add node to connected nodes vector
+      Add_Peer(node);
+      SwitchToEncryption(node);
+      Serial.println("Node Added to Vector.");
+    } else {
+      free(node); // Free the allocated memory if it's a duplicate
+      Serial.println("Node Already Exists in Vector.");
+    }
+  }
+
+  Serial.println("Successfully Loaded Data from EEPROM.");
+}
+
+void PrintMACTable() {
+  int nodes = 0;
+  Serial.println("Connected Nodes:");
+  for(auto& node:connected_nodes) {
+    ++nodes;
+    Serial.printf("MAC: %02X:%02X:%02X:%02X:%02X:%02X\n", node[0], node[1], node[2], node[3], node[4], node[5]);
+  }
+  Serial.printf("Total Nodes: %d", nodes);
+}
+
+void AddToRoutingAndEEPROM(const uint8_t *mac) {
+  Add_Peer(mac); // Add Peer to ESP-NOW Routing Table
+  SwitchToEncryption(mac); // Switch to Encryption Mode
+  SaveDataToEEPROM(); // Save Data to EEPROM
+}
+
 void setup() {
   
   Serial.begin(115200);
-
+  EEPROM.begin(EEPROM_SIZE); // Initialize EEPROM
   // Initialize WiFi and Set in Station Mode
   WiFi.disconnect();
   WiFi.mode(WIFI_STA);  
@@ -475,8 +559,8 @@ void setup() {
 
   esp_now_set_pmk((uint8_t *) PMK_KEY); // Set PMK Key
 
-  Add_Peer(node2); // Add 1st ESP32 32u Peer
-  SwitchToEncryption(node2);
+  //Add_Peer(node2); // Add 1st ESP32 32u Peer
+  //SwitchToEncryption(node2);
   //delay(50);
   //Add_Peer(node3); // Add 2nd ESP32 32u Peer  
   //SwitchToEncryption(node3);
@@ -484,6 +568,13 @@ void setup() {
   //Add_Peer(node1);
   //SwitchToEncryption(node1);
   //delay(100);
+
+  // AddToRoutingAndEEPROM(node2);
+  // AddToRoutingAndEEPROM(node3);
+
+  LoadDataFromEEPROM();
+  delay(5);
+  PrintMACTable();
 
   esp_now_register_send_cb(On_Data_Sent); // Register send_cb function
   esp_now_register_recv_cb(On_Data_Receive); // Register receive_cb function  

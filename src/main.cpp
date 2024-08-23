@@ -36,7 +36,7 @@ std::vector<uint8_t> PathToFollow; // Path to Follow
 const uint8_t node1[] = {0xEC, 0x62, 0x60, 0x93, 0xC7, 0xA8}; // MAC Address of 1st ESP32
 const uint8_t node2[] = {0x48, 0xE7, 0x29, 0xA3, 0x47, 0x40}; // MAC Address of 2nd ESP32-32u 
 const uint8_t node3[] = {0x24, 0xDC, 0xC3, 0xC6, 0xAE, 0xCC}; // MAC Address of 3rd ESP32-32u 
-
+const uint8_t node4[] = {0x08, 0xD1, 0xF9, 0xAF, 0x2D, 0x90}; // MAC Address of WT32-ETH01
 // PMK & LMK Keys
 static const char *PMK_KEY = "Connection_ESP32"; // 16-byte PMK
 static const char *LMK_KEY = "LMK@ESP32_123456"; // 16-byte LMK
@@ -677,12 +677,15 @@ void PrintMACPath(uint8_t index) {
     Serial.printf("MAC at index %d: %02X:%02X:%02X:%02X:%02X:%02X\n",i, msg.Path_Array[i][0], msg.Path_Array[i][1], msg.Path_Array[i][2], msg.Path_Array[i][3], msg.Path_Array[i][4], msg.Path_Array[i][5]);
   }
 }
+
 void ReverseArray(uint8_t index, uint8_t path_arr[MAX_NODES][MAC_SIZE]) {
   uint8_t temp[MAC_SIZE];
-  for (int i = 0; i < (index / 2); ++i) {
+  uint8_t size = index;
+  ++size;
+  for (int i = 0; i < size/2; ++i) {
       memcpy(temp, path_arr[i], MAC_SIZE);  // Copy current to temp
-      memcpy(path_arr[i], path_arr[index - i], MAC_SIZE);  // Copy last element to current index
-      memcpy(path_arr[index - i], temp, MAC_SIZE);  // Copy current element to last index
+      memcpy(path_arr[i], path_arr[size - 1 - i], MAC_SIZE);  // Copy last element to current index
+      memcpy(path_arr[size - 1 - i], temp, MAC_SIZE);  // Copy current element to last index
   }
 
   Serial.println("Row reversed Successfully.");
@@ -904,6 +907,8 @@ void setup() {
 
   Add_Peer(node2); // Add 1st ESP32 32u Peer
   SwitchToEncryption(node2);
+  Add_Peer(node4);
+  SwitchToEncryption(node4);
   //delay(50);
   //Add_Peer(node3); // Add 2nd ESP32 32u Peer  
   //SwitchToEncryption(node3);
@@ -953,11 +958,11 @@ void loop() {
     prev_time = millis();
   }*/
 
- if(currentState == READY_TO_SEND) {
-  Check_Dest_Flag = CheckDestInPath(node3);
+ /*if(currentState == READY_TO_SEND) {
+  Check_Dest_Flag = CheckDestInPath(node4);
   msg.Path_Index = 0;
-  Configure_Packet("Hello from Node 1", 3, 2, false, false, node3, node1, false); // Configure Packet
-  Send_Data(node3);
+  Configure_Packet("Hello from Node 1", 3, 2, false, false, node4, node1, false); // Configure Packet
+  Send_Data(node4);
   Check_Dest_Flag = false;
   currentState = WAITING_FOR_ACK; // Change State to WAITING_FOR_ACK
  }
@@ -966,7 +971,7 @@ void loop() {
   /* Packet Sent */
   /* Acknowledgement not received within (3, 6, 12) sec */
   /* Retransmit Packet */
-  retry_count++;
+  /*retry_count++;
   RTO *= 2; // Double RTO for Next Attempt (3, 6, 12) sec
   Serial.println("Retransmitting Packet.");
   Configure_Packet((char *)copy_msg.text, copy_msg.TTL, copy_msg.identification, copy_msg.broadcast_Ack, copy_msg.Data_Ack, copy_msg.destination_mac, copy_msg.source_mac, copy_msg.Path_Exist); // Configure Packet
@@ -982,7 +987,7 @@ void loop() {
   memset(&msg, 0, sizeof(msg)); // Clear Packet Buffer
   currentState = READY_TO_SEND; // Change State to READY_TO_SEND
   while(1); // Halt the Program
- }
+ }*/
 
   /*if(millis() - prev_time > 5000) {
     Forward_Message();
